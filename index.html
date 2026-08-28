@@ -174,7 +174,7 @@
     <div class="stat-row">
       <div class="stat"><div class="num" id="stat-total">0</div><div class="lbl">누적 풀이</div></div>
       <div class="stat"><div class="num" id="stat-acc">-</div><div class="lbl">정답률</div></div>
-      <div class="stat wrong"><div class="num" id="stat-wrong">0</div><div class="lbl">누적 오답</div></div>
+      <div class="stat wrong"><div class="num" id="stat-wrong">0</div><div class="lbl">미해결 오답</div></div>
     </div>
 
     <div class="section-label">단원 선택 (여러 개 가능, 미선택 시 전체)</div>
@@ -185,7 +185,7 @@
 
     <button class="cta" id="btn-start">시험 시작</button>
     <button class="ghost-btn hidden" id="btn-review">📕 누적 오답만 다시 풀기 (<span id="review-count">0</span>문항)</button>
-    <button class="ghost-btn hidden" id="btn-history">🗂 오답 히스토리 보기 (단원별)</button>
+    <button class="ghost-btn" id="btn-history">🗂 오답 히스토리 보기 (단원별)</button>
     <button class="ghost-btn" id="btn-goto-add">➕ 문제 추가하기 (<span id="custom-count">0</span>개 보유)</button>
   </div>
 
@@ -478,8 +478,10 @@ const STORE_KEY = "lifeethics_quiz_history_v1";
 function loadHistory(){
   try{
     const raw = localStorage.getItem(STORE_KEY);
-    return raw ? JSON.parse(raw) : {total:0, correct:0, wrong:{}};
-  }catch(e){ return {total:0, correct:0, wrong:{}}; }
+    const h = raw ? JSON.parse(raw) : {total:0, correct:0, wrong:{}, everWrong:{}};
+    if(!h.everWrong) h.everWrong = {}; // 구버전 데이터 호환
+    return h;
+  }catch(e){ return {total:0, correct:0, wrong:{}, everWrong:{}}; }
 }
 function saveHistory(h){
   try{ localStorage.setItem(STORE_KEY, JSON.stringify(h)); }catch(e){}
@@ -565,11 +567,12 @@ async function refreshHomeStats(){
   document.getElementById('stat-total').textContent = h.total;
   document.getElementById('stat-acc').textContent = h.total ? Math.round(h.correct/h.total*100)+"%" : "-";
   const wrongCount = Object.keys(h.wrong).length;
+  const everWrongCount = Object.keys(h.everWrong).length;
   document.getElementById('stat-wrong').textContent = wrongCount;
   const reviewBtn = document.getElementById('btn-review');
   document.getElementById('review-count').textContent = wrongCount;
   reviewBtn.classList.toggle('hidden', wrongCount===0);
-  document.getElementById('btn-history').classList.toggle('hidden', wrongCount===0);
+  document.getElementById('btn-history').textContent = everWrongCount>0 ? `🗂 오답 히스토리 보기 (${everWrongCount}개 누적)` : '🗂 오답 히스토리 보기';
   document.getElementById('custom-count').textContent = loadCustom().length;
 }
 refreshHomeStats();
@@ -603,7 +606,7 @@ document.getElementById('btn-history-back').onclick = ()=>{
 
 async function renderHistoryScreen(){
   const h = await loadHistory();
-  const ids = Object.keys(h.wrong);
+  const ids = Object.keys(h.everWrong);
   const body = document.getElementById('history-body');
   body.innerHTML = '';
 
@@ -618,7 +621,7 @@ async function renderHistoryScreen(){
     const q = pool.find(qq => qid(qq)===id);
     if(!q) return; // 문제가 삭제된 경우(커스텀 문제 삭제 등) 건너뜀
     if(!byUnit[q.u]) byUnit[q.u]=[];
-    byUnit[q.u].push(q);
+    byUnit[q.u].push({ q, meta: h.everWrong[id], resolved: !h.wrong[id] });
   });
 
   UNITS.forEach(u=>{
@@ -634,24 +637,44 @@ async function renderHistoryScreen(){
         <div class="count">${list.length}개</div>
       </div>
     `;
-    list.forEach(q=>{
+    list.forEach(({q, meta, resolved})=>{
       const correctLabel = q.t==='ox' ? (q.a?'O':'X') : q.opts[q.a];
       const item = document.createElement('div');
       item.className = 'wrong-item';
-      item.innerHTML = `<div class="wrong-q">${q.q}</div><div class="wrong-ans"><b>정답 ${correctLabel}</b> · ${q.ex}</div>`;
+      const statusTag = resolved
+        ? '<span style="color:var(--green); font-weight:700;">✓ 지금은 맞힘</span>'
+        : '<span style="color:var(--red); font-weight:700;">✗ 아직 미해결</span>';
+      const countTxt = meta && meta.count>1 ? ` · 총 ${meta.count}회 틀림` : '';
+      item.innerHTML = `<div class="wrong-q">${q.q}</div><div class="wrong-ans"><b>정답 ${correctLabel}</b> · ${q.ex}</div><div style="font-size:11px; margin-top:5px;">${statusTag}${countTxt}</div>`;
       group.appendChild(item);
     });
     const redoBtn = document.createElement('button');
     redoBtn.className = 'hist-redo';
     redoBtn.style.marginTop = '10px';
-    redoBtn.textContent = `이 단원 오답만 다시 풀기 →`;
+    redoBtn.textContent = `이 단원 전체 다시 풀기 →`;
     redoBtn.onclick = ()=>{
       document.getElementById('screen-history').classList.add('hidden');
-      startSession(shuffle([...list]));
+      startSession(shuffle(list.map(x=>x.q)));
     };
     group.appendChild(redoBtn);
     body.appendChild(group);
   });
+
+  const clearBtn = document.createElement('button');
+  clearBtn.className = 'ghost-btn';
+  clearBtn.style.borderColor = 'var(--red)';
+  clearBtn.style.color = 'var(--red)';
+  clearBtn.textContent = '히스토리 전체 기록 초기화';
+  clearBtn.onclick = async ()=>{
+    if(!confirm('오답 히스토리 전체 기록을 삭제할까? 되돌릴 수 없어.')) return;
+    const hh = await loadHistory();
+    hh.everWrong = {};
+    hh.wrong = {};
+    await saveHistory(hh);
+    renderHistoryScreen();
+    refreshHomeStats();
+  };
+  body.appendChild(clearBtn);
 }
 
 
@@ -779,8 +802,13 @@ async function finishAnswer(correct, q, correctLabel){
   h.total += 1;
   if(correct) h.correct += 1;
   const id = qid(q);
-  if(correct) delete h.wrong[id];
-  else h.wrong[id] = true;
+  if(correct) delete h.wrong[id];       // "다시 풀 목록"에서는 제거 (해결됨)
+  else {
+    h.wrong[id] = true;                  // 아직 못 푼 목록에 추가
+    if(!h.everWrong[id]) h.everWrong[id] = { count:0, first: Date.now() };
+    h.everWrong[id].count += 1;          // 영구 기록: 절대 삭제되지 않음
+    h.everWrong[id].last = Date.now();
+  }
   await saveHistory(h);
 
   document.getElementById('btn-next').classList.remove('hidden');
